@@ -18,7 +18,7 @@ Notes:
 import uuid
 
 import pytest
-
+import timehelpers as th
 import queries
 from app import app
 
@@ -109,18 +109,25 @@ class TestPageRendering:
     def test_index_nonexistent_project_falls_back_to_empty_state(self, client):
         resp = client.get("/project/999999999")
         assert resp.status_code == 200
-        assert b"Select a project" in resp.data
-        assert b"Pick a project from the sidebar" in resp.data
+        text = " ".join(resp.data.decode().split())
+        assert "Select a project" in text
+        assert "Pick a project from the sidebar" in text
 
     def test_sidebar_lists_created_project(self, client, project):
         resp = client.get("/")
         assert project["title"].encode() in resp.data
+
+    def test_sidebar_has_close_button_for_mobile_drawer(self, client):
+        resp = client.get("/")
+        assert b'id="sidebar-close"' in resp.data
+        assert b'id="menu-btn"' in resp.data
 
     def test_header_view_toggle_present_on_every_page(self, client, project):
         for path in (
             "/",
             f"/project/{project['id']}",
             "/calendar",
+            "/calendar/day/2025-01-02",
             "/project/new",
             f"/project/{project['id']}/edit",
         ):
@@ -128,6 +135,8 @@ class TestPageRendering:
             assert resp.status_code == 200
             assert b"List" in resp.data
             assert b"Calendar" in resp.data
+            assert b"menu-btn" in resp.data  
+            assert b"sidebar-backdrop" in resp.data
 
     def test_task_count_badge_reflects_activities(self, client, project, activity):
         resp = client.get("/")
@@ -421,7 +430,7 @@ class TestSlotsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /calendar
+# /calendar (month view) and /calendar/day/<date> (day view)
 # ---------------------------------------------------------------------------
 
 
@@ -445,35 +454,258 @@ class TestCalendarView:
             b"year=2025&amp;month=7" in resp.data or b"year=2025&month=7" in resp.data
         )
 
-    def test_selecting_day_with_single_project_redirects_to_it(self, client, project):
-        # project's own end_date (2025-01-10) is the only thing due that day
-        resp = client.get(
-            f"/calendar?year=2025&month=1&date=2025-01-10", follow_redirects=False
-        )
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith(f"/project/{project['id']}")
-
-    def test_selecting_day_with_multiple_items_shows_agenda(
-        self, client, project, activity
-    ):
-        # 2025-01-02 has just the one activity due, but the project also
-        # spans that date only as a mid-window day (not start/end), so the
-        # single-project shortcut still applies; use a day where the
-        # project's own boundary AND the task collide to force the agenda -
-        # here we just confirm the activity shows up on its own due date
-        resp = client.get("/calendar?year=2025&month=1&date=2025-01-02")
-        # single project involved -> redirect (matches app's own shortcut)
-        assert resp.status_code == 302
-
-    def test_empty_day_shows_nothing_message(self, client):
-        resp = client.get("/calendar?year=2099&month=1&date=2099-01-15")
+    def test_invalid_month_is_clamped_instead_of_crashing(self, client):
+        resp = client.get("/calendar?year=2025&month=13")
         assert resp.status_code == 200
-        assert b"Nothing on this day" in resp.data
+        assert b"December 2025" in resp.data
 
     def test_dates_with_items_get_a_dot(self, client, project):
         resp = client.get("/calendar?year=2025&month=1")
         assert b"calendar__dot" in resp.data
 
+    def test_dots_cover_every_day_of_a_multi_day_project(self, client, project):
+        # project spans Jan 1-10, so a mid-span day (Jan 5) should have a dot too
+        resp = client.get("/calendar?year=2025&month=1")
+        html = resp.data.decode()
+        cell = html.split('href="/calendar/day/2025-01-05"')[1].split("</a>")[0]
+        assert "calendar__dot" in cell
+
+    def test_day_without_items_has_no_dot(self, client, project):
+        resp = client.get("/calendar?year=2025&month=1")
+        html = resp.data.decode()
+        cell = html.split('href="/calendar/day/2025-01-20"')[1].split("</a>")[0]
+        assert "calendar__dot" not in cell
+
+    def test_day_cells_link_to_day_view(self, client, project):
+        resp = client.get("/calendar?year=2025&month=1")
+        assert b"/calendar/day/2025-01-10" in resp.data
+
+    def test_legend_lists_projects_in_the_month(self, client, project):
+        resp = client.get("/calendar?year=2025&month=1")
+        assert b"calendar__legend" in resp.data
+        assert project["title"].encode() in resp.data
+
+
+class TestDayView:
+    def test_day_view_loads(self, client):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert resp.status_code == 200
+        assert b"Thursday, 02 January 2025" in resp.data
+
+    def test_day_view_shows_task_and_project(self, client, project, activity):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert resp.status_code == 200
+        assert activity["title"].encode() in resp.data
+        assert project["title"].encode() in resp.data
+        assert b"cal-event" in resp.data
+        assert b"cal-band" in resp.data
+
+    def test_task_block_shows_time_range_and_duration(self, client, project, activity):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert b"10:00 AM" in resp.data
+        assert b"10:30 AM" in resp.data
+        assert b"30 min" in resp.data
+
+    def test_task_block_links_to_edit_page(self, client, project, activity):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert f"/activity/{activity['id']}/edit".encode() in resp.data
+
+    def test_project_chip_links_to_project(self, client, project, activity):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert f'href="/project/{project["id"]}"'.encode() in resp.data
+
+    def test_mid_span_project_is_labelled_all_day(self, client, project):
+        resp = client.get("/calendar/day/2025-01-05")
+        assert b"All day" in resp.data
+
+    def test_project_start_and_end_days_are_labelled(self, client, project):
+        assert b"Starts today" in client.get("/calendar/day/2025-01-01").data
+        assert b"Ends today" in client.get("/calendar/day/2025-01-10").data
+
+    def test_single_day_project_shows_its_duration(self, client):
+        title = _unique_title("Two Hour Project")
+        resp = client.post(
+            "/project/new",
+            data={
+                "title": title,
+                "start_date": "2025-04-01",
+                "start_time": "09:00",
+                "end_date": "2025-04-01",
+                "end_time": "11:00",
+            },
+        )
+        project_id = int(resp.headers["Location"].rstrip("/").split("/")[-1])
+        try:
+            page = client.get("/calendar/day/2025-04-01")
+            assert title.encode() in page.data
+            assert b"2 hr project" in page.data
+        finally:
+            queries.delete_project(project_id)
+
+    def test_day_view_does_not_show_other_days_tasks(self, client, project, activity):
+        resp = client.get("/calendar/day/2025-01-03")
+        assert activity["title"].encode() not in resp.data
+
+    def test_empty_day_shows_nothing_message(self, client):
+        resp = client.get("/calendar/day/2099-01-15")
+        assert resp.status_code == 200
+        assert b"Nothing scheduled" in resp.data
+
+    def test_invalid_day_redirects_to_month_view(self, client):
+        resp = client.get("/calendar/day/not-a-date", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/calendar")
+
+    def test_prev_and_next_day_links(self, client):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert b"/calendar/day/2025-01-01" in resp.data
+        assert b"/calendar/day/2025-01-03" in resp.data
+
+    def test_prev_next_cross_month_boundary(self, client):
+        resp = client.get("/calendar/day/2025-01-01")
+        assert b"/calendar/day/2024-12-31" in resp.data
+
+    def test_back_to_month_link(self, client):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert b"year=2025&amp;month=1" in resp.data or b"year=2025&month=1" in resp.data
+
+    def test_today_gets_a_now_line(self, client):
+        resp = client.get(f"/calendar/day/{app_today()}")
+        assert b"day-grid__now" in resp.data
+
+    def test_past_day_has_no_now_line(self, client):
+        resp = client.get("/calendar/day/2025-01-02")
+        assert b"day-grid__now" not in resp.data
+
+    def test_calendar_toggle_active_on_day_view(self, client):
+        resp = client.get("/calendar/day/2025-01-02")
+        html = resp.data.decode()
+        calendar_btn = html.split('href="/calendar"')[0].rsplit("<a", 1)[1]
+        assert "is-active" in calendar_btn
+
+
+def app_today():
+    from app import today
+
+    return today()
+
+
+# ---------------------------------------------------------------------------
+# th.build_day_layout / th.format_duration (pure functions, no client needed)
+# ---------------------------------------------------------------------------
+
+
+def _project_row(pid=1, start_date="2025-01-01", start_time="09:00",
+                 end_date="2025-01-01", end_time="17:00", title="P"):
+    return {
+        "id": pid, "title": title,
+        "start_date": start_date, "start_time": start_time,
+        "end_date": end_date, "end_time": end_time,
+    }
+
+
+def _task_row(tid, start, end, pid=1, day="2025-01-01"):
+    return {
+        "id": tid, "title": f"T{tid}", "project_id": pid, "project_title": "P",
+        "due_date": day, "start_time": start, "end_time": end,
+    }
+
+
+class TestDayLayout:
+    def test_format_duration(self):
+        assert th.format_duration(30) == "30 min"
+        assert th.format_duration(60) == "1 hr"
+        assert th.format_duration(120) == "2 hr"
+        assert th.format_duration(90) == "1 hr 30 min"
+
+    def test_project_color_is_stable_per_project(self):
+        assert th.project_color(3) == th.project_color(3)
+        assert th.project_color(1) != th.project_color(2)
+
+    def test_task_position_and_height_match_time(self):
+        layout = th.build_day_layout(
+            "2025-01-01", [_project_row()], [_task_row(1, "10:00", "12:00")]
+        )
+        task = layout["tasks"][0]
+        assert task["top"] == 10 * th.HOUR_PX
+        assert task["height"] == 2 * th.HOUR_PX
+        assert task["duration"] == "2 hr"
+
+    def test_short_task_gets_minimum_height_and_short_flag(self):
+        layout = th.build_day_layout(
+            "2025-01-01", [_project_row()], [_task_row(1, "10:00", "10:15")]
+        )
+        task = layout["tasks"][0]
+        assert task["height"] >= th.MIN_BLOCK_PX
+        assert task["short"] is True
+
+    def test_overlapping_tasks_are_placed_side_by_side(self):
+        layout = th.build_day_layout(
+            "2025-01-01",
+            [_project_row(1), _project_row(2)],
+            [_task_row(1, "10:00", "11:00", pid=1), _task_row(2, "10:30", "11:30", pid=2)],
+        )
+        a, b = layout["tasks"]
+        assert a["cols"] == b["cols"] == 2
+        assert {a["col"], b["col"]} == {0, 1}
+
+    def test_back_to_back_tasks_are_not_side_by_side(self):
+        layout = th.build_day_layout(
+            "2025-01-01",
+            [_project_row()],
+            [_task_row(1, "10:00", "10:30"), _task_row(2, "10:30", "11:00")],
+        )
+        assert all(t["cols"] == 1 and t["col"] == 0 for t in layout["tasks"])
+
+    def test_non_overlapping_cluster_after_overlap_resets_columns(self):
+        layout = th.build_day_layout(
+            "2025-01-01",
+            [_project_row(1), _project_row(2)],
+            [
+                _task_row(1, "09:00", "10:00", pid=1),
+                _task_row(2, "09:30", "10:30", pid=2),
+                _task_row(3, "14:00", "15:00", pid=1),
+            ],
+        )
+        last = next(t for t in layout["tasks"] if t["id"] == 3)
+        assert last["cols"] == 1
+
+    def test_task_past_midnight_is_clipped_to_end_of_day(self):
+        # add_minutes wraps, so 23:45 + 30 min is stored as end_time "00:15"
+        layout = th.build_day_layout(
+            "2025-01-01", [_project_row()], [_task_row(1, "23:45", "00:15")]
+        )
+        task = layout["tasks"][0]
+        assert task["end"] == 1440
+        assert task["height"] > 0
+
+    def test_multi_day_project_bands_are_clipped_to_the_day(self):
+        project = _project_row(start_date="2025-01-01", end_date="2025-01-03",
+                               start_time="09:00", end_time="17:00")
+        first = th.build_day_layout("2025-01-01", [project], [])["bands"][0]
+        middle = th.build_day_layout("2025-01-02", [project], [])["bands"][0]
+        last = th.build_day_layout("2025-01-03", [project], [])["bands"][0]
+
+        assert first["top"] == 9 * th.HOUR_PX and first["note"] == "Starts today"
+        assert middle["top"] == 0 and middle["height"] == 24 * th.HOUR_PX
+        assert middle["note"] == "All day"
+        assert last["top"] == 0 and last["height"] == 17 * th.HOUR_PX
+        assert last["note"] == "Ends today"
+
+    def test_single_day_project_note_includes_duration(self):
+        project = _project_row(start_time="09:00", end_time="11:00")
+        band = th.build_day_layout("2025-01-01", [project], [])["bands"][0]
+        assert band["note"] == "2 hr project"
+
+    def test_first_px_points_at_earliest_task(self):
+        layout = th.build_day_layout(
+            "2025-01-01", [_project_row(start_time="00:00")], [_task_row(1, "13:00", "14:00")]
+        )
+        assert layout["first_px"] == 13 * th.HOUR_PX
+
+    def test_first_px_defaults_to_8am_when_empty(self):
+        layout = th.build_day_layout("2025-01-01", [], [])
+        assert layout["first_px"] == 8 * th.HOUR_PX
 
 # ---------------------------------------------------------------------------
 # /api/due
@@ -502,29 +734,16 @@ class TestDueEndpoint:
         titles = [item["title"] for item in resp.get_json()]
         assert title in titles
 
-    def test_future_activity_does_not_appear(self, client, project):
-        # note: the due_date <-> project-window relationship is only
-        # enforced client-side (the date input's min/max) - _save_activity
-        # itself doesn't check it, so this POST succeeds even though
-        # 2099 falls outside the project's Jan 2025 window. What we're
-        # actually testing here is that /api/due correctly excludes
-        # anything whose due date/time hasn't arrived yet.
+    def test_future_activity_outside_project_span_is_rejected(self, client, project):
         title = _unique_title("Future Task")
+
         resp = client.post(
             f"/project/{project['id']}/activity/new",
-            data={
-                "title": title,
-                "description": "",
-                "due_date": "2099-01-01",
-                "start_time": "09:00",
-                "duration": "30",
-            },
+            data={"title": title,"description": "","due_date": "2099-01-01","start_time": "09:00","duration": "30",},
         )
-        assert resp.status_code == 302
 
-        due_resp = client.get("/api/due")
-        titles = [item["title"] for item in due_resp.get_json()]
-        assert title not in titles
+        assert resp.status_code == 200
+        assert b"outside the project span" in resp.data
 
 
 if __name__ == "__main__":

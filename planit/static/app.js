@@ -37,6 +37,8 @@ async function refreshSlots(projectId, excludeId) {
   });
 }
 
+const appEl = document.querySelector(".app");
+
 document
   .getElementById("due-date")
   ?.addEventListener("change", () => refreshSlots(PROJECT_ID, EXCLUDE_ID));
@@ -101,4 +103,24 @@ document.querySelectorAll("[data-url]").forEach((item) => {
   item.addEventListener("click", () => {
     window.location.href = item.dataset.url;
   });
+});
+
+function setSidebar(open) {
+  appEl.classList.toggle("sidebar-open", open);
+  document
+    .getElementById("menu-btn")
+    ?.setAttribute("aria-expanded", String(open));
+}
+
+document
+  .getElementById("menu-btn")
+  ?.addEventListener("click", () => setSidebar(true));
+document
+  .getElementById("sidebar-close")
+  ?.addEventListener("click", () => setSidebar(false));
+document
+  .getElementById("sidebar-backdrop")
+  ?.addEventListener("click", () => setSidebar(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setSidebar(false);
 });

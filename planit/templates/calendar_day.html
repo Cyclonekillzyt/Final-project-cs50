@@ -1,0 +1,115 @@
+{% extends "base.html" %} {% block content %}
+<div class="day">
+  <div class="day__nav">
+    <a
+      class="icon-btn"
+      href="{{ url_for('calendar_day', day=prev_day) }}"
+      title="Previous day"
+      >‹</a
+    >
+    <div class="day__nav-center">
+      <h3>{{ day_label }}</h3>
+      <p class="text-muted">
+        <a href="{{ url_for('calendar_view', year=day.year, month=day.month) }}"
+          >← Month view</a
+        >
+        {% if not is_today %} ·
+        <a href="{{ url_for('calendar_day', day=today_str) }}">Today</a>{% endif
+        %} · {{ layout.tasks|length }} task{{ '' if layout.tasks|length == 1
+        else 's' }}, {{ layout.bands|length }} project{{ '' if
+        layout.bands|length == 1 else 's' }}
+      </p>
+    </div>
+    <a
+      class="icon-btn"
+      href="{{ url_for('calendar_day', day=next_day) }}"
+      title="Next day"
+      >›</a
+    >
+  </div>
+
+  {% if layout.bands %}
+  <div class="day__projects">
+    {% for b in layout.bands %}
+    <a
+      class="day-chip"
+      style="--c: {{ b.color }}"
+      href="{{ url_for('index', project_id=b.id) }}"
+    >
+      <strong>{{ b.title }}</strong>
+      <span>{{ b.label }} · {{ b.note }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %} {% if not layout.bands and not layout.tasks %}
+  <p class="body__empty">Nothing scheduled for this day.</p>
+  {% endif %}
+
+  <div
+    class="day-grid"
+    id="day-grid"
+    data-scroll="{{ layout.first_px }}"
+    style="--hour-px: {{ hour_px }}px"
+  >
+    <div class="day-grid__hours">
+      {% for h in hours %}
+      <div class="day-grid__hour">
+        <span>{{ th.format_time_label('%02d:00'|format(h)) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="day-grid__canvas">
+      {% for h in hours %}
+      <div class="day-grid__line" style="top: {{ h * hour_px }}px"></div>
+      {% endfor %} {% for b in layout.bands %}
+      <a
+        class="cal-band"
+        style="--c: {{ b.color }}; top: {{ b.top }}px; height: {{ b.height }}px; left: {{ b.index * 6 }}px"
+        href="{{ url_for('index', project_id=b.id) }}"
+        title="{{ b.title }} · {{ b.label }}"
+      >
+        <span class="cal-band__label">{{ b.title }}</span>
+      </a>
+      {% endfor %}
+
+      <div
+        class="day-grid__events"
+        style="left: {{ layout.bands|length * 6 + 8 }}px"
+      >
+        {% for t in layout.tasks %}
+        <a
+          class="cal-event {{ 'cal-event--short' if t.short else '' }}"
+          style="--c: {{ t.color }}; top: {{ t.top }}px; height: {{ t.height }}px;
+                    left: calc({{ t.col }} * 100% / {{ t.cols }});
+                    width: calc(100% / {{ t.cols }} - 3px);"
+          href="{{ url_for('edit_activity', activity_id=t.id) }}"
+          title="{{ t.title }} · {{ t.label }}"
+        >
+          <span class="cal-event__title">{{ t.title }}</span>
+          <span class="cal-event__meta">{{ t.label }} · {{ t.duration }}</span>
+          {% if not t.short %}<span class="cal-event__project"
+            >{{ t.project_title }}</span
+          >{% endif %}
+        </a>
+        {% endfor %}
+      </div>
+
+      {% if now_px is not none %}
+      <div class="day-grid__now" style="top: {{ now_px }}px"></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %} {% block scripts %}
+<script>
+  (function () {
+    const grid = document.getElementById("day-grid");
+    const main = document.querySelector(".main");
+    if (!grid || !main) return;
+    const offset =
+      grid.getBoundingClientRect().top - main.getBoundingClientRect().top;
+    main.scrollTop += offset + Number(grid.dataset.scroll) - 110;
+  })();
+</script>
+{% endblock %}

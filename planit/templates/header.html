@@ -1,30 +1,43 @@
-{% set ctx_project = current if current is defined and current else (project if project is defined and project else none) %}
+{% set ctx_project = current if current is defined and current else (project if
+project is defined and project else none) %}
 <div class="topbar">
-  <div>
-    <h2 class="topbar__title">
-      {% if request.endpoint == 'calendar_view' %}
-        Calendar{% if selected_date %}<span class="topbar__subtitle"> · {{ selected_date }}</span>{% endif %}
-      {% elif ctx_project %}
-        {{ ctx_project['title'] }}
-      {% else %}
-        Select a project
-      {% endif %}
-    </h2>
-    {% if ctx_project and request.endpoint == 'index' %}
-      {% set priority = th.get_priority(ctx_project['end_date'], ctx_project['end_time']) %}
+  <div class="topbar__left">
+    <button
+      class="menu-btn"
+      id="menu-btn"
+      type="button"
+      aria-label="Open projects menu"
+      aria-expanded="false"
+    >
+      ☰
+    </button>
+
+    <div>
+      <h2 class="topbar__title">
+        {% if request.endpoint == 'calendar_view' %} Calendar{% if selected_date
+        %}<span class="topbar__subtitle"> · {{ selected_date }}</span>{% endif
+        %} {% elif ctx_project %} {{ ctx_project['title'] }} {% else %} Select a
+        project {% endif %}
+      </h2>
+      {% if ctx_project and request.endpoint == 'index' %} {% set priority =
+      th.get_priority(ctx_project['end_date'], ctx_project['end_time']) %}
       <p class="topbar__project-meta">
-        <span class="priority-badge {{ th.get_urgency_class(priority) }}">{{ priority }}</span>
+        <span class="priority-badge {{ th.get_urgency_class(priority) }}"
+          >{{ priority }}</span
+        >
         <span class="text-muted">
-          {% if ctx_project['start_date'] == ctx_project['end_date'] %}
-            {{ ctx_project['start_date'] }} · {{ th.format_time_label(ctx_project['start_time']) }} –
-            {{ th.format_time_label(ctx_project['end_time']) }}
-          {% else %}
-            {{ ctx_project['start_date'] }} {{ th.format_time_label(ctx_project['start_time']) }} →
-            {{ ctx_project['end_date'] }} {{ th.format_time_label(ctx_project['end_time']) }}
-          {% endif %}
+          {% if ctx_project['start_date'] == ctx_project['end_date'] %} {{
+          ctx_project['start_date'] }} · {{
+          th.format_time_label(ctx_project['start_time']) }} – {{
+          th.format_time_label(ctx_project['end_time']) }} {% else %} {{
+          ctx_project['start_date'] }} {{
+          th.format_time_label(ctx_project['start_time']) }} → {{
+          ctx_project['end_date'] }} {{
+          th.format_time_label(ctx_project['end_time']) }} {% endif %}
         </span>
       </p>
-    {% endif %}
+      {% endif %}
+    </div>
   </div>
 
   <div class="topbar__actions">
@@ -32,14 +45,22 @@
       <a
         class="view-toggle__btn {{ 'is-active' if request.endpoint == 'index' else '' }}"
         href="{{ url_for('index', project_id=ctx_project['id']) if ctx_project else url_for('index') }}"
-      >List</a>
+        >List</a
+      >
       <a
-        class="view-toggle__btn {{ 'is-active' if request.endpoint == 'calendar_view' else '' }}"
+        class="view-toggle__btn {{ 'is-active' if request.endpoint in ('calendar_view', 'calendar_day') else '' }}"
         href="{{ url_for('calendar_view') }}"
-      >Calendar</a>
+        >Calendar</a
+      >
     </div>
 
-    <button class="bell-btn" id="bell-btn" type="button" onclick="requestNotifications()" title="Turn on due-date notifications">
+    <button
+      class="bell-btn"
+      id="bell-btn"
+      type="button"
+      onclick="requestNotifications()"
+      title="Turn on due-date notifications"
+    >
       🔕
     </button>
 

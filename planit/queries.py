@@ -1,6 +1,8 @@
+import os
 from cs50 import SQL
 
-db = SQL("sqlite:///planit.db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db = SQL("sqlite:///" + os.path.join(BASE_DIR, "planit.db"))
 
 
 def get_projects():
@@ -94,30 +96,31 @@ def get_activity(activity_id):
     return activities[0]
 
 
-def get_calendar_projects(year, month):
+def get_projects_overlapping(start_date, end_date):
+    """Projects whose span touches [start_date, end_date]."""
     return db.execute(
         """
         SELECT * FROM project
-        WHERE strftime('%Y-%m', end_date) = ?
-           OR strftime('%Y-%m', start_date) = ?
+        WHERE start_date <= ? AND end_date >= ?
+        ORDER BY start_date, start_time
         """,
-        f"{year:04d}-{month:02d}",
-        f"{year:04d}-{month:02d}",
+        end_date,
+        start_date,
     )
 
 
-def get_calendar_activities(year, month):
+def get_activities_between(start_date, end_date):
     return db.execute(
         """
         SELECT activity.*, project.title AS project_title
         FROM activity
         JOIN project ON project.id = activity.project_id
-        WHERE strftime('%Y-%m', due_date) = ?
+        WHERE due_date BETWEEN ? AND ?
+        ORDER BY due_date, start_time
         """,
-        f"{year:04d}-{month:02d}",
+        start_date,
+        end_date,
     )
-
-
 def get_due_projects(now):
     return db.execute(
         """

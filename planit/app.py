@@ -1,5 +1,5 @@
 import calendar as cal
-from datetime import date, datetime
+from datetime import date, datetime,timedelta
 
 import queries
 import timehelpers as th
@@ -7,7 +7,6 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 app = Flask(__name__)
 
-app.config["TESTING"] = True
 
 DEFAULT_START, DEFAULT_END, DEFAULT_DURATION = "09:00", "17:00", 30
 
@@ -63,7 +62,7 @@ def _save_project(project_id):
     start_date, start_time = request.form["start_date"], request.form["start_time"]
     end_date, end_time = request.form["end_date"], request.form["end_time"]
 
-    if end_date < start_date or (end_date == start_date and end_time <= start_time):
+    if end_date < start_date or ( end_date == start_date and end_time <= start_time):
         return render_template(
             "project_form.html",
             project=queries.get_project(project_id) if project_id else None,
@@ -73,7 +72,7 @@ def _save_project(project_id):
 
     if project_id:
         activities = queries.get_activities(project_id)
-        out_of_bounds = th.find_activities_outside_window(
+        out_of_bounds = th.find_activities_outside_project_span(
             activities, start_date, end_date, start_time, end_time
         )
         if out_of_bounds:
@@ -116,7 +115,11 @@ def get_slots(project_id):
     exclude_id = request.args.get("exclude", type=int)
     activities = queries.get_activities(project_id)
 
-    slots = th.generate_time_slots(project["start_time"], project["end_time"])
+    slots = th.generate_time_slots_for_date(
+        f'{project["start_date"]}T{project["start_time"]}',
+        f'{project["end_date"]}T{project["end_time"]}',
+        current_date,
+    )
     result = [
         {
             "time": s,
@@ -126,8 +129,8 @@ def get_slots(project_id):
                 current_date,
                 s,
                 duration,
-                project["start_time"],
-                project["end_time"],
+                f'{project["start_date"]}T{project["start_time"]}',
+                f'{project["end_date"]}T{project["end_time"]}',
                 exclude_id,
             ),
         }
@@ -143,7 +146,12 @@ def new_activity(project_id):
         return _save_activity(project_id, None)
 
     activities = queries.get_activities(project_id)
-    slots = th.generate_time_slots(project["start_time"], project["end_time"])
+    slots = th.generate_time_slots_for_date(
+        f'{project["start_date"]}T{project["start_time"]}',
+        f'{project["end_date"]}T{project["end_time"]}',
+        project["start_date"],
+
+    )
     first_free = next(
         (
             s
@@ -153,8 +161,8 @@ def new_activity(project_id):
                 project["start_date"],
                 s,
                 DEFAULT_DURATION,
-                project["start_time"],
-                project["end_time"],
+                f'{project["start_date"]}T{project["start_time"]}',
+                f'{project["end_date"]}T{project["end_time"]}',
             )
         ),
         "",
@@ -179,7 +187,11 @@ def edit_activity(activity_id):
         return _save_activity(activity["project_id"], activity_id)
 
     activities = queries.get_activities(project["id"])
-    slots = th.generate_time_slots(project["start_time"], project["end_time"])
+    slots = th.generate_time_slots_for_date(
+        f'{project["start_date"]}T{project["start_time"]}',
+        f'{project["end_date"]}T{project["end_time"]}',
+        activity["due_date"],
+    )
     duration = th.to_minutes(activity["end_time"]) - th.to_minutes(
         activity["start_time"]
     )
@@ -204,18 +216,34 @@ def _save_activity(project_id, activity_id):
     start_time = request.form["start_time"]
     duration = int(request.form["duration"])
     end_time = th.add_minutes(start_time, duration)
+    project_start = f'{project["start_date"]}T{project["start_time"]}'
+    project_end = f'{project["end_date"]}T{project["end_time"]}'
+    slot_start = datetime.fromisoformat(f"{due_date}T{start_time}")
+    slot_end = slot_start + timedelta(minutes=duration)
+    project_start_dt = datetime.fromisoformat(project_start)
+    project_end_dt = datetime.fromisoformat(project_end)
 
-    if not th.is_slot_available(
+    if slot_start < project_start_dt or slot_end > project_end_dt:
+        error = "The activity is outside the project span."
+    elif not th.is_slot_available(
         activities,
         due_date,
         start_time,
         duration,
-        project["start_time"],
-        project["end_time"],
+        project_start,
+        project_end,
         exclude_activity_id=activity_id,
     ):
-        # re-render form with an error instead of trusting the client
-        slots = th.generate_time_slots(project["start_time"], project["end_time"])
+       error = "Pick a free time slot to continue."
+    else:
+        error = None
+    
+    if error:
+        slots = th.generate_time_slots_for_date(
+            project_start,
+            project_end,
+            due_date,
+        )
         return render_template(
             "activity_form.html",
             project=project,
@@ -225,7 +253,7 @@ def _save_activity(project_id, activity_id):
             duration=duration,
             slots=slots,
             activities=activities,
-            error="Pick a free time slot to continue.",
+            error=error,
         )
 
     if activity_id:
@@ -251,34 +279,29 @@ def delete_activity(activity_id):
 def calendar_view():
     year = request.args.get("year", type=int, default=date.today().year)  # noqa: DTZ011
     month = request.args.get("month", type=int, default=date.today().month)  # noqa: DTZ011
-    selected_date = request.args.get("date")
+    month = min(max(month, 1), 12)
 
-    dated_projects = queries.get_calendar_projects(year, month)
-    dated_activities = queries.get_calendar_activities(year, month)
-
-    dates_with_items = (
-        {p["start_date"] for p in dated_projects}
-        | {p["end_date"] for p in dated_projects}
-        | {a["due_date"] for a in dated_activities}
-    )
-
-    agenda = None
-    if selected_date:
-        day_projects = [p for p in dated_projects if p["end_date"] == selected_date]
-        day_activities = [a for a in dated_activities if a["due_date"] == selected_date]
-        project_ids = {p["id"] for p in day_projects} | {
-            a["project_id"] for a in day_activities
-        }
-
-        if len(project_ids) == 1:
-            return redirect(url_for("index", project_id=next(iter(project_ids))))
-
-        agenda = {"projects": day_projects, "activities": day_activities}
-
-    # month-grid data the calendar template needs (weekday offset, day count,
-    # human label, and prev/next links) - Jinja can't do date math on its own.
     first_weekday_mon0, days_in_month = cal.monthrange(year, month)
-    first_weekday = (first_weekday_mon0 + 1) % 7  # convert Mon=0 -> Sun=0
+    first_weekday = (first_weekday_mon0 + 1) % 7  # Mon=0 -> Sun=0
+    first = date(year, month, 1)
+    last = date(year, month, days_in_month)
+
+    month_projects = queries.get_projects_overlapping(first.isoformat(), last.isoformat())
+    month_activities = queries.get_activities_between(first.isoformat(), last.isoformat())
+
+    # date -> {project_id: color}, so each day can show one dot per project
+    day_colors = {}
+    for p in month_projects:
+        color = th.project_color(p["id"])
+        d = max(date.fromisoformat(p["start_date"]), first)
+        end = min(date.fromisoformat(p["end_date"]), last)
+        while d <= end:
+            day_colors.setdefault(d.isoformat(), {})[p["id"]] = color
+            d += timedelta(days=1)
+    for a in month_activities:
+        day_colors.setdefault(a["due_date"], {})[a["project_id"]] = th.project_color(
+            a["project_id"]
+        )
 
     prev_month, prev_year = (12, year - 1) if month == 1 else (month - 1, year)
     next_month, next_year = (1, year + 1) if month == 12 else (month + 1, year)
@@ -287,7 +310,7 @@ def calendar_view():
         "calendar.html",
         year=year,
         month=month,
-        month_label=date(year, month, 1).strftime("%B %Y"),
+        month_label=first.strftime("%B %Y"),
         first_weekday=first_weekday,
         days_in_month=days_in_month,
         prev_month=prev_month,
@@ -295,11 +318,41 @@ def calendar_view():
         next_month=next_month,
         next_year=next_year,
         today_str=today(),
-        dates_with_items=dates_with_items,
-        selected_date=selected_date,
-        agenda=agenda,
+        day_colors=day_colors,
+        month_projects=month_projects,
     )
 
+
+@app.route("/calendar/day/<day>")
+def calendar_day(day):
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        return redirect(url_for("calendar_view"))
+
+    iso = d.isoformat()
+    projects = queries.get_projects_overlapping(iso, iso)
+    activities = queries.get_activities_between(iso, iso)
+    layout = th.build_day_layout(iso, projects, activities)
+
+    now = datetime.now()  # noqa: DTZ005
+    is_today = iso == today()
+    now_px = round((now.hour * 60 + now.minute) * th.HOUR_PX / 60, 1) if is_today else None
+
+    return render_template(
+        "calendar_day.html",
+        day=d,
+        selected_date=iso,
+        day_label=d.strftime("%A, %d %B %Y"),
+        prev_day=(d - timedelta(days=1)).isoformat(),
+        next_day=(d + timedelta(days=1)).isoformat(),
+        is_today=is_today,
+        now_px=now_px,
+        today_str=today(),
+        hours=range(24),
+        hour_px=th.HOUR_PX,
+        layout=layout,
+    )
 
 @app.route("/api/due")
 def due_items():

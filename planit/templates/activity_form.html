@@ -2,7 +2,7 @@
 
 {% set start_time_valid = start_time and th.is_slot_available(
   activities, due_date, start_time, duration,
-  project['start_time'], project['end_time'],
+  project['start_date'] ~ 'T' ~ project['start_time'], project['end_date'] ~ 'T' ~ project['end_time'],
   activity['id'] if activity else none
 ) %}
 
@@ -15,8 +15,16 @@
   >
     <h3 class="modal-form__title">{{ 'Edit Task' if activity else 'New Task' }}</h3>
     <p class="modal-form__hint">
-      {{ project['title'] }}: {{ project['start_date'] }} → {{ project['end_date'] }},
-      {{ th.format_time_label(project['start_time']) }}–{{ th.format_time_label(project['end_time']) }} daily
+      {% if project['start_date'] == project['end_date'] %}
+        {{ project['title'] }}:
+        {{ project['start_date'] }}
+        {{ th.format_time_label(project['start_time']) }} →
+        {{ th.format_time_label(project['end_time']) }}
+      {% else %}
+        {{ project['title'] }}:
+        {{ project['start_date'] }} {{ th.format_time_label(project['start_time']) }} →
+        {{ project['end_date'] }} {{ th.format_time_label(project['end_time']) }}
+      {% endif %}
     </p>
 
     {% if error %}
@@ -56,13 +64,13 @@
     <input type="hidden" id="start-time" name="start_time" value="{{ start_time }}" />
 
     {% if slots|length == 0 %}
-      <p class="field-hint">This project's daily window is too short for any task.</p>
+      <p class="field-hint">The project span is too short for any task.</p>
     {% else %}
       <div class="time-slots" id="time-slots">
         {% for slot in slots %}
           {% set available = th.is_slot_available(
             activities, due_date, slot, duration,
-            project['start_time'], project['end_time'],
+            project["start_date"] ~ "T" ~ project["start_time"], project["end_date"] ~ "T" ~ project["end_time"],
             activity['id'] if activity else none
           ) %}
           <button
