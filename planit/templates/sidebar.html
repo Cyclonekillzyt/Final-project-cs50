@@ -36,7 +36,7 @@ project is defined and project else none) %}
       <div class="sidebar-project__meta">
         <span
           class="priority-dot {{ th.get_urgency_class(priority) }}"
-          title="{{ priority }}"
+          title="{{ priority }}" data-due="{{ p['end_date'] }}T{{ p['end_time'] }}"
         ></span>
         <span class="sidebar-project__dates"
           >{{ p['start_date'] }} → {{ p['end_date'] }}</span

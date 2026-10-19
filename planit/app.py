@@ -1,11 +1,70 @@
 import calendar as cal
-from datetime import date, datetime,timedelta
+import os
+import secrets
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import queries
 import timehelpers as th
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    abort,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 
 app = Flask(__name__)
+
+
+# Anonymous per-browser identity
+def _load_secret_key():
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
+    key_file = Path(app.instance_path) / "secret_key"
+    if key_file.exists():
+        return key_file.read_text().strip()
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_hex(32)
+    key_file.write_text(key)
+    return key
+
+
+app.secret_key = _load_secret_key()
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(days=730),
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("SESSION_COOKIE_SECURE")),
+)
+
+
+@app.before_request
+def identify_visitor():
+    if request.endpoint == "static":
+        return
+    if "uid" not in session:
+        session["uid"] = secrets.token_hex(16)
+    session.permanent = True  # keep the cookie across browser restarts
+    g.uid = session["uid"]
+
+
+def own_project_or_404(project_id):
+    project = queries.get_project(project_id, g.uid)
+    if project is None:
+        abort(404)
+    return project
+
+
+def own_activity_or_404(activity_id):
+    activity = queries.get_activity(activity_id, g.uid)
+    if activity is None:
+        abort(404)
+    return activity
 
 
 DEFAULT_START, DEFAULT_END, DEFAULT_DURATION = "09:00", "17:00", 30
@@ -14,16 +73,17 @@ DEFAULT_START, DEFAULT_END, DEFAULT_DURATION = "09:00", "17:00", 30
 def today():
     return date.today().isoformat()  # noqa: DTZ011
 
+
 @app.context_processor
 def inject_globals():
-    return {"projects": queries.get_projects(), "th": th}
+    return {"projects": queries.get_projects(g.uid), "th": th}
 
 
 @app.route("/")
 @app.route("/project/<int:project_id>")
 def index(project_id=None):
-    current = queries.get_project(project_id) if project_id else None
-    activities = queries.get_activities(project_id) if current else []
+    current = queries.get_project(project_id, g.uid) if project_id else None
+    activities = queries.get_activities(project_id, g.uid) if current else []
     enriched = [
         {
             **dict(a),
@@ -51,7 +111,7 @@ def new_project():
 
 @app.route("/project/<int:project_id>/edit", methods=["GET", "POST"])
 def edit_project(project_id):
-    project = queries.get_project(project_id)
+    project = own_project_or_404(project_id)
     if request.method == "POST":
         return _save_project(project_id)
     return render_template("project_form.html", project=project, today=today())
@@ -62,16 +122,16 @@ def _save_project(project_id):
     start_date, start_time = request.form["start_date"], request.form["start_time"]
     end_date, end_time = request.form["end_date"], request.form["end_time"]
 
-    if end_date < start_date or ( end_date == start_date and end_time <= start_time):
+    if end_date < start_date or (end_date == start_date and end_time <= start_time):
         return render_template(
             "project_form.html",
-            project=queries.get_project(project_id) if project_id else None,
+            project=queries.get_project(project_id, g.uid) if project_id else None,
             error="The end of the project has to be after the start.",
             today=today(),
         )
 
     if project_id:
-        activities = queries.get_activities(project_id)
+        activities = queries.get_activities(project_id, g.uid)
         out_of_bounds = th.find_activities_outside_project_span(
             activities, start_date, end_date, start_time, end_time
         )
@@ -86,16 +146,16 @@ def _save_project(project_id):
             )
             return render_template(
                 "project_form.html",
-                project=queries.get_project(project_id),
+                project=queries.get_project(project_id, g.uid),
                 error=error,
                 today=today(),
             )
         queries.update_project(
-            project_id, title, start_date, start_time, end_date, end_time
+            project_id, title, start_date, start_time, end_date, end_time, g.uid
         )
     else:
         project_id = queries.create_project(
-            title, start_date, start_time, end_date, end_time
+            title, start_date, start_time, end_date, end_time, g.uid
         )
 
     return redirect(url_for("index", project_id=project_id))
@@ -103,17 +163,17 @@ def _save_project(project_id):
 
 @app.route("/project/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id):
-    queries.delete_project(project_id)
+    queries.delete_project(project_id, g.uid)
     return redirect(url_for("index"))
 
 
 @app.route("/project/<int:project_id>/slots")
 def get_slots(project_id):
-    project = queries.get_project(project_id)
+    project = own_project_or_404(project_id)
     current_date = request.args.get("date")
     duration = int(request.args.get("duration", DEFAULT_DURATION))
     exclude_id = request.args.get("exclude", type=int)
-    activities = queries.get_activities(project_id)
+    activities = queries.get_activities(project_id, g.uid)
 
     slots = th.generate_time_slots_for_date(
         f'{project["start_date"]}T{project["start_time"]}',
@@ -141,16 +201,15 @@ def get_slots(project_id):
 
 @app.route("/project/<int:project_id>/activity/new", methods=["GET", "POST"])
 def new_activity(project_id):
-    project = queries.get_project(project_id)
+    project = own_project_or_404(project_id)
     if request.method == "POST":
         return _save_activity(project_id, None)
 
-    activities = queries.get_activities(project_id)
+    activities = queries.get_activities(project_id, g.uid)
     slots = th.generate_time_slots_for_date(
         f'{project["start_date"]}T{project["start_time"]}',
         f'{project["end_date"]}T{project["end_time"]}',
         project["start_date"],
-
     )
     first_free = next(
         (
@@ -181,12 +240,12 @@ def new_activity(project_id):
 
 @app.route("/activity/<int:activity_id>/edit", methods=["GET", "POST"])
 def edit_activity(activity_id):
-    activity = queries.get_activity(activity_id)
-    project = queries.get_project(activity["project_id"])
+    activity = own_activity_or_404(activity_id)
+    project = own_project_or_404(activity["project_id"])
     if request.method == "POST":
         return _save_activity(activity["project_id"], activity_id)
 
-    activities = queries.get_activities(project["id"])
+    activities = queries.get_activities(project["id"], g.uid)
     slots = th.generate_time_slots_for_date(
         f'{project["start_date"]}T{project["start_time"]}',
         f'{project["end_date"]}T{project["end_time"]}',
@@ -208,8 +267,8 @@ def edit_activity(activity_id):
 
 
 def _save_activity(project_id, activity_id):
-    project = queries.get_project(project_id)
-    activities = queries.get_activities(project_id)
+    project = own_project_or_404(project_id)
+    activities = queries.get_activities(project_id, g.uid)
     title = request.form["title"]
     description = request.form.get("description", "")
     due_date = request.form["due_date"]
@@ -234,10 +293,10 @@ def _save_activity(project_id, activity_id):
         project_end,
         exclude_activity_id=activity_id,
     ):
-       error = "Pick a free time slot to continue."
+        error = "Pick a free time slot to continue."
     else:
         error = None
-    
+
     if error:
         slots = th.generate_time_slots_for_date(
             project_start,
@@ -247,7 +306,7 @@ def _save_activity(project_id, activity_id):
         return render_template(
             "activity_form.html",
             project=project,
-            activity=queries.get_activity(activity_id) if activity_id else None,
+            activity=queries.get_activity(activity_id, g.uid) if activity_id else None,
             due_date=due_date,
             start_time=start_time,
             duration=duration,
@@ -258,7 +317,7 @@ def _save_activity(project_id, activity_id):
 
     if activity_id:
         queries.update_activity(
-            activity_id, title, description, due_date, start_time, end_time
+            activity_id, title, description, due_date, start_time, end_time, g.uid
         )
     else:
         queries.create_activity(
@@ -270,15 +329,17 @@ def _save_activity(project_id, activity_id):
 
 @app.route("/activity/<int:activity_id>/delete", methods=["POST"])
 def delete_activity(activity_id):
-    activity = queries.get_activity(activity_id)
-    queries.delete_activity(activity_id)
+    activity = own_activity_or_404(activity_id)
+    queries.delete_activity(activity_id, g.uid)
     return redirect(url_for("index", project_id=activity["project_id"]))
 
 
 @app.route("/calendar")
 def calendar_view():
     year = request.args.get("year", type=int, default=date.today().year)  # noqa: DTZ011
-    month = request.args.get("month", type=int, default=date.today().month)  # noqa: DTZ011
+    month = request.args.get(
+        "month", type=int, default=date.today().month
+    )  # noqa: DTZ011
     month = min(max(month, 1), 12)
 
     first_weekday_mon0, days_in_month = cal.monthrange(year, month)
@@ -286,8 +347,12 @@ def calendar_view():
     first = date(year, month, 1)
     last = date(year, month, days_in_month)
 
-    month_projects = queries.get_projects_overlapping(first.isoformat(), last.isoformat())
-    month_activities = queries.get_activities_between(first.isoformat(), last.isoformat())
+    month_projects = queries.get_projects_overlapping(
+        first.isoformat(), last.isoformat(), g.uid
+    )
+    month_activities = queries.get_activities_between(
+        first.isoformat(), last.isoformat(), g.uid
+    )
 
     # date -> {project_id: color}, so each day can show one dot per project
     day_colors = {}
@@ -331,13 +396,15 @@ def calendar_day(day):
         return redirect(url_for("calendar_view"))
 
     iso = d.isoformat()
-    projects = queries.get_projects_overlapping(iso, iso)
-    activities = queries.get_activities_between(iso, iso)
+    projects = queries.get_projects_overlapping(iso, iso, g.uid)
+    activities = queries.get_activities_between(iso, iso, g.uid)
     layout = th.build_day_layout(iso, projects, activities)
 
     now = datetime.now()  # noqa: DTZ005
     is_today = iso == today()
-    now_px = round((now.hour * 60 + now.minute) * th.HOUR_PX / 60, 1) if is_today else None
+    now_px = (
+        round((now.hour * 60 + now.minute) * th.HOUR_PX / 60, 1) if is_today else None
+    )
 
     return render_template(
         "calendar_day.html",
@@ -354,9 +421,20 @@ def calendar_day(day):
         layout=layout,
     )
 
+
 @app.route("/api/due")
 def due_items():
-    now = datetime.now().isoformat(timespec="minutes")  # noqa: DTZ005
-    projects = queries.get_due_projects(now)
-    activities = queries.get_due_activities(now)
+    try:
+        now_dt = datetime.fromisoformat(request.args.get("now", ""))
+    except ValueError:
+        now_dt = datetime.now()  # noqa: DTZ005
+    now = now_dt.isoformat(timespec="minutes")
+    since = (now_dt - timedelta(hours=24)).isoformat(timespec="minutes")
+
+    projects = [
+        {**p, "type": "project"} for p in queries.get_due_projects(since, now, g.uid)
+    ]
+    activities = [
+        {**a, "type": "task"} for a in queries.get_due_activities(since, now, g.uid)
+    ]
     return jsonify(projects + activities)

@@ -22,7 +22,7 @@ project is defined and project else none) %}
       {% if ctx_project and request.endpoint == 'index' %} {% set priority =
       th.get_priority(ctx_project['end_date'], ctx_project['end_time']) %}
       <p class="topbar__project-meta">
-        <span class="priority-badge {{ th.get_urgency_class(priority) }}"
+        <span class="priority-badge {{ th.get_urgency_class(priority) }}" data-due="{{ ctx_project['end_date'] }}T{{ ctx_project['end_time'] }}"
           >{{ priority }}</span
         >
         <span class="text-muted">
