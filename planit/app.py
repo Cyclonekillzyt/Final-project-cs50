@@ -9,6 +9,7 @@ import timehelpers as th
 from flask import (
     Flask,
     abort,
+    flash,
     g,
     jsonify,
     redirect,
@@ -153,17 +154,21 @@ def _save_project(project_id):
         queries.update_project(
             project_id, title, start_date, start_time, end_date, end_time, g.uid
         )
+        flash("Changes saved", "success")
     else:
         project_id = queries.create_project(
             title, start_date, start_time, end_date, end_time, g.uid
         )
+        flash("Project created", "success")
 
     return redirect(url_for("index", project_id=project_id))
 
 
 @app.route("/project/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id):
+    project = own_project_or_404(project_id)
     queries.delete_project(project_id, g.uid)
+    flash(f'Deleted "{project["title"]}"', "success")
     return redirect(url_for("index"))
 
 
@@ -319,10 +324,12 @@ def _save_activity(project_id, activity_id):
         queries.update_activity(
             activity_id, title, description, due_date, start_time, end_time, g.uid
         )
+        flash("Changes saved", "success")
     else:
         queries.create_activity(
             project_id, title, description, due_date, start_time, end_time
         )
+        flash("Task added", "success")
 
     return redirect(url_for("index", project_id=project_id))
 
@@ -331,6 +338,7 @@ def _save_activity(project_id, activity_id):
 def delete_activity(activity_id):
     activity = own_activity_or_404(activity_id)
     queries.delete_activity(activity_id, g.uid)
+    flash("Task deleted", "success")
     return redirect(url_for("index", project_id=activity["project_id"]))
 
 
@@ -438,3 +446,13 @@ def due_items():
         {**a, "type": "task"} for a in queries.get_due_activities(since, now, g.uid)
     ]
     return jsonify(projects + activities)
+
+
+@app.route("/api/next-due")
+def next_due():
+    try:
+        now_dt = datetime.fromisoformat(request.args.get("now", ""))
+    except ValueError:
+        now_dt = datetime.now()  # noqa: DTZ005
+    now = now_dt.isoformat(timespec="minutes")
+    return jsonify({"next": queries.get_next_due(now, g.uid)})

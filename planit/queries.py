@@ -181,3 +181,24 @@ def get_due_activities(since, now, owner_id):
         now,
         since,
     )
+
+
+def get_next_due(now, owner_id):
+    """Earliest project or task end that is still in the future."""
+    rows = db.execute(
+        """
+        SELECT MIN(due_at) AS next_due FROM (
+            SELECT (end_date || 'T' || end_time) AS due_at
+            FROM project WHERE owner_id = ?
+            UNION ALL
+            SELECT (activity.due_date || 'T' || activity.end_time)
+            FROM activity
+            JOIN project ON project.id = activity.project_id
+            WHERE project.owner_id = ?
+        ) WHERE due_at > ?
+        """,
+        owner_id,
+        owner_id,
+        now,
+    )
+    return rows[0]["next_due"]

@@ -23,6 +23,9 @@
     </div>
 
     {% block scripts %}{% endblock %}
+    <script> 
+      window.PLANIT_FLASH = {{ get_flashed_messages(with_categories=true)|tojson }};
+    </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>
