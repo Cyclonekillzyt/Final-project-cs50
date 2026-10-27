@@ -2,4 +2,4 @@ __pycache__/
 .pytest_cache/
 planit.db
 venv/
-.venv/
+.venv/instance/
