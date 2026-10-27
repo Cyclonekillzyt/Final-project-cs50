@@ -1,5 +1,6 @@
 # Plan It
 #### Video Demo: https://youtu.be/KC1uz4NDdZw
+#### GitHub link: https://github.com/Cyclonekillzyt/Final-project-cs50.git
 #### Description:
 
 Plan It is a web based project planner built with Flask, SQLite and plain JavaScript. The idea is simple. Every project has a continuous time span (a start date and time, and an end date and time), and every task inside that project is booked into a real time slot within that span, the same way you would book a meeting in a calendar app. You cannot put two tasks on top of each other, you cannot put a task outside its project, and you can see all of it in a list view or in a calendar that works like the Google and Apple calendars, with a month overview and a day view where tasks sit at their exact times in colored blocks.
