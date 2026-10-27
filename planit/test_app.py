@@ -1,3 +1,9 @@
+# AI DISCLOSURE
+# Claude (Anthropic's AI) was used to write and modify this file.
+# It was used throughout this project, including the calendar system, the toast
+# system, the switch from browser notifications to toasts, per-browser sessions,
+# the mobile sidebar drawer and the tests.
+
 """
 Full pytest suite for Plan It.
 
@@ -10,6 +16,11 @@ Notes:
   separate test database configured), so every fixture creates its own
   uniquely-named data and tears it down afterward. Don't run this against
   a database with data you care about without checking DB_PATH first.
+- Every browser gets its own anonymous uid (see identify_visitor in app.py)
+  and every query in queries.py takes that uid as `owner_id`. The fixtures
+  below read the uid out of the test client's session and pass it along, so
+  direct calls to `queries.*` in tests look like
+  `queries.get_project(project["id"], project["uid"])`.
 - Tests are grouped into classes by feature area; each has its own fixtures
   so you can run a single class in isolation, e.g.
       pytest test_app.py::TestActivityCRUD -v
@@ -22,7 +33,6 @@ import timehelpers as th
 import queries
 from app import app
 
-
 # ---------------------------------------------------------------------------
 # shared fixtures
 # ---------------------------------------------------------------------------
@@ -31,8 +41,16 @@ from app import app
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c
+    # No `with` here: session_transaction() is used below to read the uid, and
+    # a plain client keeps its own cookie jar without preserving request contexts.
+    return app.test_client()
+
+
+def _uid(client):
+    """The anonymous owner id this test client was given by the app."""
+    client.get("/")  # first request creates the session uid
+    with client.session_transaction() as s:
+        return s["uid"]
 
 
 def _unique_title(prefix):
@@ -42,6 +60,7 @@ def _unique_title(prefix):
 @pytest.fixture
 def project(client):
     """Create a project (Jan 1-10 2025, 09:00-17:00) and clean it up after."""
+    uid = _uid(client)
     title = _unique_title("Pytest Project")
     resp = client.post(
         "/project/new",
@@ -56,9 +75,9 @@ def project(client):
     assert resp.status_code == 302
     project_id = int(resp.headers["Location"].rstrip("/").split("/")[-1])
 
-    yield {"id": project_id, "title": title}
+    yield {"id": project_id, "title": title, "uid": uid}
 
-    queries.delete_project(project_id)
+    queries.delete_project(project_id, uid)
 
 
 @pytest.fixture
@@ -76,14 +95,19 @@ def activity(client, project):
         },
     )
     assert resp.status_code == 302
-    activities = queries.get_activities(project["id"])
+    activities = queries.get_activities(project["id"], project["uid"])
     activity_row = next(a for a in activities if a["title"] == title)
 
-    yield {"id": activity_row["id"], "title": title, "project_id": project["id"]}
+    yield {
+        "id": activity_row["id"],
+        "title": title,
+        "project_id": project["id"],
+        "uid": project["uid"],
+    }
 
     # project fixture's own teardown will cascade-delete this, but if the
     # activity was already deleted mid-test that's fine too
-    queries.delete_activity(activity_row["id"])
+    queries.delete_activity(activity_row["id"], project["uid"])
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +159,7 @@ class TestPageRendering:
             assert resp.status_code == 200
             assert b"List" in resp.data
             assert b"Calendar" in resp.data
-            assert b"menu-btn" in resp.data  
+            assert b"menu-btn" in resp.data
             assert b"sidebar-backdrop" in resp.data
 
     def test_task_count_badge_reflects_activities(self, client, project, activity):
@@ -152,6 +176,7 @@ class TestPageRendering:
 
 class TestProjectCRUD:
     def test_create_project_redirects_to_it(self, client):
+        uid = _uid(client)
         title = _unique_title("Create Test")
         resp = client.post(
             "/project/new",
@@ -171,7 +196,7 @@ class TestProjectCRUD:
             view = client.get(f"/project/{project_id}")
             assert title.encode() in view.data
         finally:
-            queries.delete_project(project_id)
+            queries.delete_project(project_id, uid)
 
     def test_reject_end_before_start(self, client):
         resp = client.post(
@@ -221,7 +246,7 @@ class TestProjectCRUD:
             },
         )
         assert resp.status_code == 302
-        updated = queries.get_project(project["id"])
+        updated = queries.get_project(project["id"], project["uid"])
         assert updated["title"] == new_title
         assert updated["end_date"] == "2025-01-15"
 
@@ -245,7 +270,7 @@ class TestProjectCRUD:
         assert activity["title"].encode() in resp.data
 
         # and the project itself should be untouched
-        unchanged = queries.get_project(project["id"])
+        unchanged = queries.get_project(project["id"], project["uid"])
         assert unchanged["start_date"] == "2025-01-01"
 
     def test_shrinking_window_allowed_when_tasks_still_fit(
@@ -262,10 +287,11 @@ class TestProjectCRUD:
             },
         )
         assert resp.status_code == 302
-        updated = queries.get_project(project["id"])
+        updated = queries.get_project(project["id"], project["uid"])
         assert updated["end_date"] == "2025-01-03"
 
     def test_delete_project(self, client):
+        uid = _uid(client)
         resp = client.post(
             "/project/new",
             data={
@@ -280,12 +306,12 @@ class TestProjectCRUD:
 
         del_resp = client.post(f"/project/{project_id}/delete")
         assert del_resp.status_code == 302
-        assert queries.get_project(project_id) is None
+        assert queries.get_project(project_id, uid) is None
 
     def test_delete_project_cascades_to_its_activities(self, client, project, activity):
         client.post(f"/project/{project['id']}/delete")
-        assert queries.get_project(project["id"]) is None
-        assert queries.get_activity(activity["id"]) is None
+        assert queries.get_project(project["id"], project["uid"]) is None
+        assert queries.get_activity(activity["id"], project["uid"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -378,13 +404,13 @@ class TestActivityCRUD:
             },
         )
         assert resp.status_code == 302
-        updated = queries.get_activity(activity["id"])
+        updated = queries.get_activity(activity["id"], activity["uid"])
         assert updated["description"] == "updated"
 
     def test_delete_activity(self, client, project, activity):
         resp = client.post(f"/activity/{activity['id']}/delete")
         assert resp.status_code == 302
-        assert queries.get_activity(activity["id"]) is None
+        assert queries.get_activity(activity["id"], activity["uid"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +549,7 @@ class TestDayView:
         assert b"Ends today" in client.get("/calendar/day/2025-01-10").data
 
     def test_single_day_project_shows_its_duration(self, client):
+        uid = _uid(client)
         title = _unique_title("Two Hour Project")
         resp = client.post(
             "/project/new",
@@ -540,7 +567,7 @@ class TestDayView:
             assert title.encode() in page.data
             assert b"2 hr project" in page.data
         finally:
-            queries.delete_project(project_id)
+            queries.delete_project(project_id, uid)
 
     def test_day_view_does_not_show_other_days_tasks(self, client, project, activity):
         resp = client.get("/calendar/day/2025-01-03")
@@ -567,7 +594,9 @@ class TestDayView:
 
     def test_back_to_month_link(self, client):
         resp = client.get("/calendar/day/2025-01-02")
-        assert b"year=2025&amp;month=1" in resp.data or b"year=2025&month=1" in resp.data
+        assert (
+            b"year=2025&amp;month=1" in resp.data or b"year=2025&month=1" in resp.data
+        )
 
     def test_today_gets_a_now_line(self, client):
         resp = client.get(f"/calendar/day/{app_today()}")
@@ -595,19 +624,33 @@ def app_today():
 # ---------------------------------------------------------------------------
 
 
-def _project_row(pid=1, start_date="2025-01-01", start_time="09:00",
-                 end_date="2025-01-01", end_time="17:00", title="P"):
+def _project_row(
+    pid=1,
+    start_date="2025-01-01",
+    start_time="09:00",
+    end_date="2025-01-01",
+    end_time="17:00",
+    title="P",
+):
     return {
-        "id": pid, "title": title,
-        "start_date": start_date, "start_time": start_time,
-        "end_date": end_date, "end_time": end_time,
+        "id": pid,
+        "title": title,
+        "start_date": start_date,
+        "start_time": start_time,
+        "end_date": end_date,
+        "end_time": end_time,
     }
 
 
 def _task_row(tid, start, end, pid=1, day="2025-01-01"):
     return {
-        "id": tid, "title": f"T{tid}", "project_id": pid, "project_title": "P",
-        "due_date": day, "start_time": start, "end_time": end,
+        "id": tid,
+        "title": f"T{tid}",
+        "project_id": pid,
+        "project_title": "P",
+        "due_date": day,
+        "start_time": start,
+        "end_time": end,
     }
 
 
@@ -643,7 +686,10 @@ class TestDayLayout:
         layout = th.build_day_layout(
             "2025-01-01",
             [_project_row(1), _project_row(2)],
-            [_task_row(1, "10:00", "11:00", pid=1), _task_row(2, "10:30", "11:30", pid=2)],
+            [
+                _task_row(1, "10:00", "11:00", pid=1),
+                _task_row(2, "10:30", "11:30", pid=2),
+            ],
         )
         a, b = layout["tasks"]
         assert a["cols"] == b["cols"] == 2
@@ -680,8 +726,12 @@ class TestDayLayout:
         assert task["height"] > 0
 
     def test_multi_day_project_bands_are_clipped_to_the_day(self):
-        project = _project_row(start_date="2025-01-01", end_date="2025-01-03",
-                               start_time="09:00", end_time="17:00")
+        project = _project_row(
+            start_date="2025-01-01",
+            end_date="2025-01-03",
+            start_time="09:00",
+            end_time="17:00",
+        )
         first = th.build_day_layout("2025-01-01", [project], [])["bands"][0]
         middle = th.build_day_layout("2025-01-02", [project], [])["bands"][0]
         last = th.build_day_layout("2025-01-03", [project], [])["bands"][0]
@@ -699,7 +749,9 @@ class TestDayLayout:
 
     def test_first_px_points_at_earliest_task(self):
         layout = th.build_day_layout(
-            "2025-01-01", [_project_row(start_time="00:00")], [_task_row(1, "13:00", "14:00")]
+            "2025-01-01",
+            [_project_row(start_time="00:00")],
+            [_task_row(1, "13:00", "14:00")],
         )
         assert layout["first_px"] == 13 * th.HOUR_PX
 
@@ -707,8 +759,9 @@ class TestDayLayout:
         layout = th.build_day_layout("2025-01-01", [], [])
         assert layout["first_px"] == 8 * th.HOUR_PX
 
+
 # ---------------------------------------------------------------------------
-# /api/due
+# /api/due and /api/next-due
 # ---------------------------------------------------------------------------
 
 
@@ -718,32 +771,72 @@ class TestDueEndpoint:
         assert resp.status_code == 200
         assert isinstance(resp.get_json(), list)
 
-    def test_past_due_activity_appears(self, client, project):
+    def test_recently_ended_activity_appears(self, client, project):
+        # /api/due only reports things whose end fell inside the 24 hours
+        # before `now`, so pass a `now` just after the task ends (09:30).
         title = _unique_title("Overdue Task")
         client.post(
             f"/project/{project['id']}/activity/new",
             data={
                 "title": title,
                 "description": "",
-                "due_date": "2025-01-01",  # long past
+                "due_date": "2025-01-01",
                 "start_time": "09:00",
                 "duration": "30",
             },
         )
-        resp = client.get("/api/due")
-        titles = [item["title"] for item in resp.get_json()]
-        assert title in titles
+        resp = client.get("/api/due?now=2025-01-01T10:00")
+        items = resp.get_json()
+        match = [i for i in items if i["title"] == title]
+        assert len(match) == 1
+        assert match[0]["type"] == "task"
+
+    def test_activity_older_than_24_hours_is_not_reported(self, client, project):
+        title = _unique_title("Old Task")
+        client.post(
+            f"/project/{project['id']}/activity/new",
+            data={
+                "title": title,
+                "description": "",
+                "due_date": "2025-01-01",
+                "start_time": "09:00",
+                "duration": "30",
+            },
+        )
+        resp = client.get("/api/due?now=2025-01-05T10:00")
+        assert title not in [i["title"] for i in resp.get_json()]
+
+    def test_ended_project_appears_as_project_type(self, client, project):
+        resp = client.get("/api/due?now=2025-01-10T18:00")
+        match = [i for i in resp.get_json() if i["title"] == project["title"]]
+        assert len(match) == 1
+        assert match[0]["type"] == "project"
 
     def test_future_activity_outside_project_span_is_rejected(self, client, project):
         title = _unique_title("Future Task")
 
         resp = client.post(
             f"/project/{project['id']}/activity/new",
-            data={"title": title,"description": "","due_date": "2099-01-01","start_time": "09:00","duration": "30",},
+            data={
+                "title": title,
+                "description": "",
+                "due_date": "2099-01-01",
+                "start_time": "09:00",
+                "duration": "30",
+            },
         )
 
         assert resp.status_code == 200
         assert b"outside the project span" in resp.data
+
+    def test_next_due_returns_earliest_future_end(self, client, project, activity):
+        # task ends 2025-01-02 10:30, project ends 2025-01-10 17:00
+        resp = client.get("/api/next-due?now=2025-01-01T00:00")
+        assert resp.get_json() == {"next": "2025-01-02T10:30"}
+
+    def test_next_due_is_null_when_nothing_is_upcoming(self, client, project, activity):
+        resp = client.get("/api/next-due?now=2025-01-11T00:00")
+        assert resp.get_json() == {"next": None}
 
 
 if __name__ == "__main__":

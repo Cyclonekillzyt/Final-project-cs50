@@ -1,3 +1,8 @@
+# AI DISCLOSURE
+# Claude  (Anthropic's AI ) was used to write and modify this file.
+# It was used throughout this project, including the calendar system, the toast
+# system, the switch from browser notifications to toasts, per-browser sessions,
+# the mobile sidebar drawer and the tests.
 import os
 from cs50 import SQL
 
